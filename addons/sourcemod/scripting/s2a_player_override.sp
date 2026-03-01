@@ -6,31 +6,24 @@
 #include <dhooks>
 
 
-public Plugin myinfo =
-{
-  name        = "[S2A_PLAYER] Override",
-  author      = "TouchMe", // Poggu (ver. csgo)
-  description = "Add team tags in S2A_PLAYER response (server browser query)",
-  version     = "build_0002"
+public Plugin myinfo = {
+    name        = "[S2A_PLAYER] Override",
+    author      = "TouchMe", // Poggu (ver. csgo)
+    description = "The plugin provides an API for changing the response to an S2A request",
+    version     = "build_0003",
+    url         = "https://github.com/TouchMe-Inc/s2a_player_override"
 };
 
 
 /**
  * NET_SendPacket(netchan, socket, address, data, length)
  */
-#define SIG_NET_SEND_PACKET     "NET_SendPacket" 
+#define SIG_NET_SEND_PACKET     "NET_SendPacket"
 
 /**
  * Gamedata file containing signatures/offsets for this plugin
  */
 #define GAMEDATA_FILE           "s2a_player_override.games"
-
-/**
- * Teams.
- */
-#define TEAM_SPECTATOR          1
-#define TEAM_SURVIVOR           2
-#define TEAM_INFECTED           3
 
 /**
  * Cache lifetime for S2A_PLAYER response (seconds)
@@ -55,14 +48,29 @@ enum
 int S2A_PLAYER_HEADER[] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x44 };
 
 
+GlobalForward g_fwdOnPreparePlayerInfo = null;
+
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] szErr, int iErrLength)
+{
+    if (GetEngineVersion() != Engine_Left4Dead2)
+    {
+        strcopy(szErr, iErrLength, "Plugin only supports Left 4 Dead 2.");
+        return APLRes_SilentFailure;
+    }
+
+    g_fwdOnPreparePlayerInfo = CreateGlobalForward("S2A_OnPreparePlayerInfo", ET_Hook, Param_Cell, Param_String, Param_Cell, Param_CellByRef, Param_CellByRef);
+
+    return APLRes_Success;
+}
+
 /**
  * Plugin entry point — sets up a detour on NET_SendPacket.
  */
 public void OnPluginStart()
 {
     GameData hGameConf = LoadGameConfigFile(GAMEDATA_FILE);
-    if (!hGameConf)
-    {
+    if (hGameConf == null) {
         SetFailState("Missing gamedata: \"" ... GAMEDATA_FILE ... "\"");
     }
 
@@ -70,8 +78,7 @@ public void OnPluginStart()
 
     RegisterNetSendPacketParams(hNetSendPacket);
 
-    if (!DHookEnableDetour(hNetSendPacket, false, Detour_OnNetSendPacket))
-    {
+    if (!DHookEnableDetour(hNetSendPacket, false, Detour_OnNetSendPacket)) {
         SetFailState("Failed to detour NET_SendPacket.");
     }
 
@@ -85,7 +92,7 @@ Handle SetupNetSendPacketDetour(GameData hGameConf)
 {
     Address addrSendPacket = hGameConf.GetMemSig(SIG_NET_SEND_PACKET);
     if (addrSendPacket == Address_Null) {
-        SetFailState(SIG_NET_SEND_PACKET ... ": signature not found in engine.[dll|so].");
+        SetFailState(SIG_NET_SEND_PACKET ... ": signature not found in engine.");
     }
 
     Handle hDetour = DHookCreateDetour(addrSendPacket, CallConv_CDECL, ReturnType_Int, ThisPointer_Ignore);
@@ -199,6 +206,7 @@ bool IsA2SPlayerRequest(Address address)
             return false;
         }
     }
+
     return true;
 }
 
@@ -228,7 +236,7 @@ int BuildResponse(char[] szOut, int iMaxLen)
     int iPlayerCount = 0;
 
     // Header
-    AppendData(szOut, iMaxLen, iPos, S2A_PLAYER_HEADER, sizeof(S2A_PLAYER_HEADER));
+    AppendData(szOut, iMaxLen, iPos, S2A_PLAYER_HEADER, sizeof S2A_PLAYER_HEADER);
 
     // Placeholder for player count (patched after players are written)
     int iCountOffset = iPos;
@@ -236,24 +244,23 @@ int BuildResponse(char[] szOut, int iMaxLen)
 
     // Players
     char szName[MAX_NAME_LENGTH];
+    int iScore, iTime;
     for (int iPlayer = 1; iPlayer <= MaxClients; iPlayer++)
     {
-        if (!IsClientInGame(iPlayer) || IsFakeClient(iPlayer)) {
+        if (!IsClientConnected(iPlayer) || IsFakeClient(iPlayer)) {
             continue;
         }
 
-        switch (GetClientTeam(iPlayer))
-        {
-            case TEAM_INFECTED: FormatEx(szName, sizeof(szName),  "SI   : %N", iPlayer);
-            case TEAM_SURVIVOR: FormatEx(szName, sizeof(szName),  "S    : %N", iPlayer);
-            case TEAM_SPECTATOR: FormatEx(szName, sizeof(szName), "SPEC : %N", iPlayer);
-            default: FormatEx(szName, sizeof(szName),             "?    : %N", iPlayer);
-        }
+        GetClientName(iPlayer, szName, sizeof szName);
+        iScore = (IsClientInGame(iPlayer)) ? GetClientFrags(iPlayer) : 0;
+        iTime = view_as<int>(GetClientTime(iPlayer));
+
+        ExecuteForward_OnPreparePlayerInfo(iPlayer, szName, sizeof szName, iScore, iTime);
 
         AppendByte(szOut, iMaxLen, iPos, iPlayerCount++);
         AppendCString(szOut, iMaxLen, iPos, szName);
-        AppendLE32(szOut, iMaxLen, iPos, GetClientFrags(iPlayer));
-        AppendLE32(szOut, iMaxLen, iPos, view_as<int>(GetClientTime(iPlayer)));
+        AppendLE32(szOut, iMaxLen, iPos, iScore);
+        AppendLE32(szOut, iMaxLen, iPos, iTime);
     }
 
     // Patch the count byte
@@ -328,5 +335,19 @@ void AppendData(char[] szBuf, int iMaxLen, int &iPos, const any[] szData, int iD
     for (int i = 0; i < iDataLen && iPos < iMaxLen; i++)
     {
         szBuf[iPos++] = szData[i];
+    }
+}
+
+void ExecuteForward_OnPreparePlayerInfo(int iClient, char[] szName, int iLength, int &iScore, int &iConnectTime)
+{
+    if (GetForwardFunctionCount(g_fwdOnPreparePlayerInfo))
+    {
+        Call_StartForward(g_fwdOnPreparePlayerInfo);
+        Call_PushCell(iClient);
+        Call_PushStringEx(szName, iLength, SM_PARAM_STRING_COPY|SM_PARAM_STRING_UTF8, SM_PARAM_COPYBACK);
+        Call_PushCell(iLength);
+        Call_PushCellRef(iScore);
+        Call_PushCellRef(iConnectTime);
+        Call_Finish();
     }
 }
