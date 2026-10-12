@@ -7,9 +7,9 @@ forward Action S2A_OnPreparePlayerInfo(int iClient, char[] szName, int iLength, 
 
 
 public Plugin myinfo = {
-    name        = "[S2A_PLAYER] Override",
-    author      = "TouchMe", // Poggu (ver. csgo)
-    description = "Add team tags in S2A_PLAYER response (server browser query)",
+    name        = "[S2A_PLAYER] PlayerTeamTag",
+    author      = "TouchMe",
+    description = "Add team tags in S2A_PLAYER response",
     version     = "build_0003",
     url         = "https://github.com/TouchMe-Inc/s2a_player_override"
 };
